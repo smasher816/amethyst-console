@@ -22,7 +22,8 @@ pub enum ConsoleError {
 
 pub type ConsoleVal = String;
 pub type ConsoleDesc = String;
-pub type ConsoleResult = Result<ConsoleVal, ConsoleError>;
+//pub type ConsoleResult = Result<ConsoleVal, ConsoleError>;
+struct ConsoleResult(Result<ConsoleVal, ConsoleError>);
 
 impl std::fmt::Display for ConsoleError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -36,117 +37,149 @@ impl std::fmt::Display for ConsoleError {
     }
 }
 
-struct BaseConsole {
+/*struct BaseConsole {
     root: Box<dyn cvar::IVisit + Send + Sync>,
+}*/
+
+trait NodeExt {
+    fn details(&mut self, path: &str, out: &mut String);
+    fn kind(&mut self) -> CmdType;
 }
 
-impl BaseConsole {
-    fn write(&self, console: &mut dyn cvar::IConsole, result: ConsoleResult) {
-        let output = match result {
-            Ok(text) => text,
-            Err(e) => e.to_string(),
-        };
+impl<'a> NodeExt for dyn cvar::INode + 'a{
+    fn details(&mut self, path: &str, out: &mut String) {
+        let desc = self.description().to_string();
+        match self.as_node_mut() {
+            //cvar::NodeMut::Prop(prop) => out.push_str(&format!("{}: {}\n\t{} (Default: {})\n", path, desc, prop.get(), prop.default())),
+            //cvar::NodeMut::Action(_) => out.push_str(&format!("{} [*]: {}\n", path, desc)),
+            cvar::NodeMut::Prop(prop) => out.push_str(&format!("{}: {} (Default: {})\n\t{}\n", path, prop.get(), prop.default(), desc)),
+            cvar::NodeMut::Action(_) => {
+                let (args, desc) = {
+                    let mut parts = desc.split("\n");
+                    let part1 = parts.next().unwrap_or("").to_string();
+                    let part2 = parts.collect::<Vec<_>>().join("\n");
+                    if part2.len() > 0 {
+                        (part1, part2)
+                    } else {
+                        ("".to_string(), part1)
+                    }
+                };
 
-        let output = output.trim_end();
-        if output.len() > 0 {
-            let _ = writeln!(console, "{}", output);
-        }
-    }
-
-    fn details(path: &str, node: &mut dyn cvar::INode, out: &mut String) {
-        let desc = node.description().to_string();
-        match node.as_node_mut() {
-            cvar::NodeMut::Prop(prop) => out.push_str(&format!("{}: {}\n\t{} (Default: {})\n", path, desc, prop.get(), prop.default())),
-            cvar::NodeMut::Action(_) => out.push_str(&format!("{} [*]: {}\n", path, desc)),
+                out.push_str(path);
+                if args.len() > 0 {
+                    out.push_str(&format!(" {}", args));
+                }
+                out.push_str(&format!(":\n\t{}\n", desc));
+            }
             _ => {},
         }
     }
 
-    pub fn get(&mut self, var: &str) -> ConsoleResult {
+    fn kind(&mut self) -> CmdType {
+        match self.as_node_mut() {
+            cvar::NodeMut::Prop(_) => CmdType::Prop,
+            cvar::NodeMut::List(_) => CmdType::List,
+            cvar::NodeMut::Action(_) => CmdType::Action,
+        }
+    }
+}
+
+trait Console {
+    fn get(&mut self, var: &str) -> ConsoleResult;
+    fn set(&mut self, var: &str, val: &str) -> ConsoleResult;
+    fn call(&mut self, cmd: &str, args: &[&str]) -> ConsoleResult;
+    fn reset(&mut self, var: &str) -> ConsoleResult;
+    fn reset_all(&mut self) -> ConsoleResult;
+    fn find<F>(&mut self, filter: F) -> ConsoleResult where F: Fn(&str)->bool;
+    fn help(&mut self, var: &str) -> ConsoleResult;
+    fn cmdtype(&mut self, var: &str) -> CmdType;
+    fn exec(&mut self, cmd: &str, args: Vec<&str>) -> ConsoleResult;
+}
+
+//impl BaseConsole {
+
+impl<T: cvar::IVisit> Console for T {
+    fn get(&mut self, var: &str) -> ConsoleResult {
         if let Some(val) = cvar::console::get(&mut *self, var) {
-            Ok(val)
+            ConsoleResult(Ok(val))
         } else {
-            Err(ConsoleError::UnknownProperty)
+            ConsoleResult(Err(ConsoleError::UnknownProperty))
         }
     }
 
-    pub fn set(&mut self, var: &str, val: &str) -> ConsoleResult {
+    fn set(&mut self, var: &str, val: &str) -> ConsoleResult {
         match cvar::console::set(&mut *self, var, val) {
             Ok(success) => {
                 if success {
-                    Ok("".to_string())
+                    ConsoleResult(Ok("".to_string()))
                 } else {
-                    Err(ConsoleError::UnknownProperty)
+                    ConsoleResult(Err(ConsoleError::UnknownProperty))
                 }
             }
-            Err(e) => Err(ConsoleError::InvalidValue(e.to_string()))
+            Err(e) => ConsoleResult(Err(ConsoleError::InvalidValue(e.to_string())))
         }
     }
 
-    pub fn call(&mut self, cmd: &str, args: &[&str]) -> ConsoleResult {
+    fn call(&mut self, cmd: &str, args: &[&str]) -> ConsoleResult {
         let mut buf = String::new();
         if cvar::console::invoke(&mut *self, cmd, &args, &mut buf) {
-            Ok(buf)
+            ConsoleResult(Ok(buf))
         } else {
-            Err(ConsoleError::UnknownCommand)
+            ConsoleResult(Err(ConsoleError::UnknownCommand))
         }
     }
 
-    pub fn reset(&mut self, var: &str) -> ConsoleResult {
+    fn reset(&mut self, var: &str) -> ConsoleResult {
         if cvar::console::reset(&mut *self, var) {
-            Ok("".to_string())
+            ConsoleResult(Ok("".to_string()))
         } else {
-            Err(ConsoleError::UnknownProperty)
+            ConsoleResult(Err(ConsoleError::UnknownProperty))
         }
     }
 
-    pub fn reset_all(&mut self) -> ConsoleResult {
+    fn reset_all(&mut self) -> ConsoleResult {
         cvar::console::reset_all(&mut *self);
-        Ok("OK".to_string())
+        ConsoleResult(Ok("OK".to_string()))
     }
 
-    pub fn find<F>(&mut self, filter: F) -> ConsoleResult where F: Fn(&str)->bool {
+    fn find<F>(&mut self, filter: F) -> ConsoleResult where F: Fn(&str)->bool {
         let mut out = String::new();
         cvar::console::walk(&mut *self, |path, node| {
             if filter(path) {
-                BaseConsole::details(path, node, &mut out);
+                node.details(path, &mut out);
             }
         });
 
         if out.len() > 0 {
-            Ok(out)
+            ConsoleResult(Ok(out))
         } else {
-            Err(ConsoleError::NoResults)
+            ConsoleResult(Err(ConsoleError::NoResults))
         }
     }
 
-    pub fn help(&mut self, var: &str) -> ConsoleResult {
+    fn help(&mut self, var: &str) -> ConsoleResult {
         let mut out = String::new();
         cvar::console::find(&mut *self, var, |node| {
-            BaseConsole::details(var, node, &mut out);
+            node.details(var, &mut out);
         });
 
         if out.len() > 0 {
-            Ok(out)
+            ConsoleResult(Ok(out))
         } else {
-            Err(ConsoleError::UnknownProperty)
+            ConsoleResult(Err(ConsoleError::UnknownProperty))
         }
     }
 
-    pub fn cmdtype(&mut self, var: &str) -> CmdType {
+    fn cmdtype(&mut self, var: &str) -> CmdType {
         let mut t = CmdType::NotFound;
         cvar::console::find(&mut *self, var, |node| {
-            t = match node.as_node_mut() {
-                cvar::NodeMut::Prop(_) => CmdType::Prop,
-                cvar::NodeMut::List(_) => CmdType::List,
-                cvar::NodeMut::Action(_) => CmdType::Action,
-            };
+            t = node.kind();
         });
         t
     }
 
-    pub fn exec(&mut self, console: &mut dyn cvar::IConsole, cmd: &str, args: Vec<&str>) {
-        let out = match self.cmdtype(cmd) {
+    fn exec(&mut self, cmd: &str, args: Vec<&str>) -> ConsoleResult {
+        match self.cmdtype(cmd) {
             CmdType::Prop => {
                 if let Some(val) = args.get(0) {
                     self.set(cmd, val)
@@ -157,52 +190,9 @@ impl BaseConsole {
             CmdType::Action => self.call(cmd, &args),
             CmdType::List => self.find(|path| path.starts_with(cmd)),
             CmdType::NotFound => {
-                Err(ConsoleError::UnknownCommand)
+                ConsoleResult(Err(ConsoleError::UnknownCommand))
             },
-        };
-        self.write(console, out);
-    }
-
-    pub fn cmd_help(&mut self, console: &mut dyn cvar::IConsole, args: &[&str]) {
-        let out = {
-            if let Some(var) = args.get(0) {
-                self.help(var)
-            } else {
-                self.find(|_| true)
-            }
-        };
-        self.write(console, out);
-    }
-
-    pub fn cmd_find(&mut self, console: &mut dyn cvar::IConsole, args: &[&str]) {
-        let out = {
-            if let Some(var) = args.get(0) {
-                self.find(|path| path.contains(var) && path != "find")
-            } else {
-                Err(ConsoleError::InvalidUsage("find <name>".to_string()))
-            }
-        };
-        self.write(console, out);
-    }
-
-    pub fn cmd_reset(&mut self, console: &mut dyn cvar::IConsole, args: &[&str]) {
-        let out = {
-            if let Some(var) = args.get(0) {
-                self.reset(var)
-            } else {
-                self.reset_all()
-            }
-        };
-        self.write(console, out);
-    }
-}
-
-impl cvar::IVisit for BaseConsole {
-    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode)) {
-        f(&mut cvar::Action("help", "List all commands/variables", |args, console| self.cmd_help(console, args)));
-        f(&mut cvar::Action("find", "find <text>", |args, console| self.cmd_find(console, args)));
-        f(&mut cvar::Action("reset", "find <var>", |args, console| self.cmd_reset(console, args)));
-        self.root.visit_mut(f);
+        }
     }
 }
 
@@ -221,6 +211,20 @@ impl<T> From<T> for TextSpan where T: Into<String> {
     }
 }
 
+impl From<ConsoleResult> for TextSpan {
+    fn from(result: ConsoleResult) -> TextSpan {
+        match result.0 {
+            Ok(output) => output.into(),
+            Err(e) => {
+                TextSpan {
+                    text: e.to_string(),
+                    color: [1., 0., 0., 1.]
+                }
+            }
+        }
+    }
+}
+
 impl std::fmt::Display for TextSpan {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(f, "{}", self.text)
@@ -230,7 +234,8 @@ impl std::fmt::Display for TextSpan {
 /// The imgui frontend for cvars
 /// Call `build` during your rendering stage
 pub struct ConsoleWindow {
-    root: BaseConsole, //Box<dyn cvar::IVisit + Send + Sync>,
+    root: Box<dyn cvar::IVisit + Send + Sync>,
+    //root: BaseConsole,
     buf: Vec<TextSpan>,
     prompt: ImString,
     history: Vec<String>,
@@ -239,18 +244,21 @@ pub struct ConsoleWindow {
 
 impl ConsoleWindow {
     pub fn new(node: Box<dyn cvar::IVisit + Send + Sync>) -> Self {
-        let mut console = BaseConsole {
+        /*let mut console = BaseConsole {
             root: node
         };
-        let _ = console.reset_all();
+        let _ = console.reset_all();*/
 
-        ConsoleWindow {
-            root: console,
+        let mut console = ConsoleWindow {
+            //root: console,
+            root: node,
             buf: vec![],
             prompt: ImString::with_capacity(100),
             history: vec![],
             //colors: LogColors::default(),
-        }
+        };
+        console.reset_all();
+        console
     }
 }
 
@@ -263,19 +271,18 @@ impl ConsoleWindow {
         self.buf.push(text.into());
     }
 
+    pub fn writeln<S>(&mut self, text: S) where S: Into<TextSpan> {
+        let mut span = text.into();
+        span.text = span.text.trim_end().to_string();
+        if span.text.len() > 0 {
+            span.text.push_str("\n");
+            self.buf.push(span);
+        }
+    }
+
     /*pub fn set_colors(&mut self, colors: LogColors) {
         self.colors = colors;
     }*/
-
-    pub fn exec(&mut self, cmd: String) {
-        let mut parts = cmd.split(" "); // TODO: shellesc
-        let cmd = parts.next().unwrap_or("");
-        let args = parts.collect::<Vec<_>>();
-
-        let mut out = String::new();
-        self.root.exec(&mut out, cmd, args);
-        self.write(out);
-    }
 
     pub fn draw_prompt(&mut self) {
         self.write(TextSpan {
@@ -350,7 +357,7 @@ impl ConsoleWindow {
             if input {
                 self.draw_prompt();
                 self.write(format!("{}\n", self.prompt));
-                self.exec(self.prompt.to_string());
+                self.run_cmd(self.prompt.to_string());
                 self.prompt.clear();
                 reclaim_focus = true;
             }
@@ -361,6 +368,78 @@ impl ConsoleWindow {
             }
 
         });
+    }
+
+    /*fn write_cmd(&self, result: ConsoleResult) {
+        match result {
+            Ok(output) => {
+                let output = output.trim_end();
+                if output.len() > 0 {
+                    self.write(format!("{}\n", output);
+                }just to expose the conflicting requirements error
+// the right declaration is:
+// impl<'a, T> Index<usize> for Stack<T> + 'a
+            }
+            Err(e) => {
+                self.write(TextSpan {
+                    text: e.to_string(),
+                    color: [1., 0., 0., 1.]
+                });
+            }
+        }
+    }*/
+
+    pub fn run_cmd(&mut self, cmd: String) {
+        let mut parts = cmd.split(" "); // TODO: shellesc
+        let cmd = parts.next().unwrap_or("");
+        let args = parts.collect::<Vec<_>>();
+
+        let out = self.exec(cmd, args);
+        self.writeln(out);
+    }
+
+
+    pub fn cmd_help(&mut self, args: &[&str]) {
+        let out = {
+            if let Some(var) = args.get(0) {
+                self.help(var)
+            } else {
+                self.find(|_| true)
+            }
+        };
+        self.writeln(out);
+    }
+
+    pub fn cmd_find(&mut self, args: &[&str]) {
+        let out = {
+            if let Some(var) = args.get(0) {
+                self.find(|path| path.contains(var) && path != "find")
+            } else {
+                ConsoleResult(Err(ConsoleError::InvalidUsage("find <name>".to_string())))
+            }
+        };
+        self.writeln(out);
+    }
+
+    pub fn cmd_reset(&mut self, args: &[&str]) {
+        let out = {
+            if let Some(var) = args.get(0) {
+                self.reset(var)
+            } else {
+                self.reset_all()
+            }
+        };
+        self.writeln(out);
+    }
+}
+
+impl cvar::IVisit for ConsoleWindow {
+    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode)) {
+        f(&mut cvar::Action("help", "\nList all commands and properties", |args, _| self.cmd_help(args)));
+        f(&mut cvar::Action("clear", "\nClear the screen", |_, _| self.clear()));
+        f(&mut cvar::Action("find", "<text>\nSearch for matching commands", |args, _| self.cmd_find(args)));
+        f(&mut cvar::Action("reset", "<var>\nSet a property to its default", |args, _| self.cmd_reset(args)));
+        self.root.visit_mut(f);
     }
 }
 
