@@ -10,7 +10,7 @@ use amethyst::{
     utils::application_root_dir,
 };
 
-use imgui_console::{ConsoleConfig, amethyst_imgui::RenderImgui, ConsoleError, ConsoleResult, IVisitExt, IConsoleExt, TextSpan};
+use imgui_console::{amethyst_imgui::RenderImgui, ConsoleError, ConsoleResult, IVisitExt, IConsoleExt, VisitMutExt};
 
 #[derive(Default)]
 pub struct User {
@@ -18,19 +18,16 @@ pub struct User {
     pub age: u32,
 }
 impl User {
-    //pub fn greet(&self, console: &mut dyn cvar::IConsole) {
     pub fn greet(&self, console: &mut dyn IConsoleExt) {
-        let _ = write!(console, "Hello, {}!", self.name);
-        console.write_str("Test\n");
+        let _ = writeln!(console, "Hello, {}!", self.name);
+        console.write("Test\n");
         console.write_error(&ConsoleError::InvalidUsage("Some error\n".to_string()));
         console.write_result(ConsoleResult(Err(ConsoleError::InvalidUsage("Woo".to_string()))));
         console.write_colored([0., 1., 0., 1.], "IM GREEN\n");
     }
 }
 
-//impl cvar::IVisit for User {
 impl IVisitExt for User {
-    //fn visit_mut(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode)) {
     fn visit_mut(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode), console: &mut dyn IConsoleExt) {
         f(&mut cvar::Property("name", "Persons name", &mut self.name, "<Unknown>".to_string()));
         f(&mut cvar::Property("age", "Persons age", &mut self.age, 0));
@@ -38,13 +35,34 @@ impl IVisitExt for User {
     }
 }
 
-/*impl cvar::IVisit for User {
-    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode)) {
-        println!("VISIT MUT");
-        //let mut buf = String::new();
-        //self.visit_mut2(f, &mut buf)
+pub struct Foobar {
+}
+
+impl Foobar {
+    pub fn colors(&self, console: &mut dyn IConsoleExt) {
+        console.write_colored([1., 0., 0., 1.], "RED ");
+        console.write_colored([0., 1., 0., 1.], "GREEN ");
+        console.write_colored([0., 0., 1., 1.], "BLUE\n");
     }
-}*/
+}
+
+impl IVisitExt for Foobar {
+    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode), console: &mut dyn IConsoleExt) {
+        f(&mut cvar::Action("colors", "Test colors", |_, _| self.colors(console)));
+    }
+}
+
+pub fn red(console: &mut dyn IConsoleExt) {
+    console.write_colored([1., 0., 0., 1.], "RED\n");
+}
+
+pub fn green(console: &mut dyn IConsoleExt) {
+    console.write_colored([0., 1., 0., 1.], "GREEN\n");
+}
+
+pub fn blue(console: &mut dyn IConsoleExt) {
+    console.write_colored([0., 0., 1., 1.], "BLUE\n");
+}
 
 struct Example;
 impl SimpleState for Example {}
@@ -54,24 +72,23 @@ fn main() -> amethyst::Result<()> {
     let app_root = application_root_dir()?;
     let display_config_path = app_root.join("examples/display.ron");
 
-    /*let mut user = User {
-        name: String::new(),
-        age: 0,
-    };*/
+    let mut user = User::default();
+    let mut foobar = Foobar { };
+    let root = VisitMutExt(move |f, console| {
+        f(&mut cvar::Action("red", "Test red", |_, _| red(console)));
+        f(&mut cvar::Action("green", "Test green", |_, _| green(console)));
+        f(&mut cvar::Action("blue", "Test blue", |_, _| blue(console)));
+        foobar.visit_mut(f, console);
+        user.visit_mut(f, console);
+    });
 
-    // Give the user a name
-    //cvar::console::set(&mut user, "name", "World").unwrap();
-    //assert_eq!(user.name, "World");
-
-    // Greet the user, the message is printed to the console string
-    //let mut console = String::new();
-    //cvar::console::invoke(&mut user, "greet", &[""], &mut console);
-    //assert_eq!(console, "Hello, World!");
+    let console_system = imgui_console::create_system(root);
 
     let game_data = GameDataBuilder::default()
         .with_barrier()
-        .with(imgui_console::create_system(User::default()), "imgui_console", &[]) // <--- ADDED
-        .with_bundle(InputBundle::<StringBindings>::default())?
+        .with_system_desc(console_system, "imgui_console", &[]) // <--- ADDED
+        .with_bundle(InputBundle::<StringBindings>::new()
+                     .with_bindings_from_file("examples/input.ron")?)?
         .with_bundle(
             RenderingBundle::<DefaultBackend>::new()
                 .with_plugin(
