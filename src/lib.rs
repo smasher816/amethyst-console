@@ -22,6 +22,7 @@ pub enum ConsoleError {
     Custom(String),
 }
 
+#[derive(Debug)]
 pub struct ConsoleResult(pub Result<String, ConsoleError>);
 
 impl From<Result<String, ConsoleError>> for ConsoleResult {
@@ -118,10 +119,10 @@ pub trait Console {
     fn call(&mut self, cmd: &str, args: &[&str], console: &mut dyn cvar::IConsole) -> ConsoleResult;
     fn reset(&mut self, var: &str) -> ConsoleResult;
     fn reset_all(&mut self) -> ConsoleResult;
-    fn find<F>(&mut self, filter: F) -> ConsoleResult where F: Fn(&str)->bool;
+    fn find(&mut self, filter: &(dyn Fn(&str)->bool)) -> ConsoleResult;
     fn help(&mut self, var: &str) -> ConsoleResult;
     fn cmdtype(&mut self, var: &str) -> CmdType;
-    fn exec(&mut self, cmd: &str, args: Vec<&str>, console: &mut ColoredConsole);
+    fn exec(&mut self, cmd: &str, args: Vec<&str>) -> ConsoleResult;
 }
 
 impl<T: cvar::IVisit> Console for T {
@@ -167,7 +168,7 @@ impl<T: cvar::IVisit> Console for T {
         "OK".into()
     }
 
-    fn find<F>(&mut self, filter: F) -> ConsoleResult where F: Fn(&str)->bool {
+    fn find(&mut self, filter: &(dyn Fn(&str)->bool)) -> ConsoleResult {
         let mut out = String::new();
         cvar::console::walk(&mut *self, |path, node| {
             if filter(path) {
@@ -203,8 +204,8 @@ impl<T: cvar::IVisit> Console for T {
         t
     }
 
-    fn exec(&mut self, cmd: &str, args: Vec<&str>, console: &mut ColoredConsole) {
-        let ret = match self.cmdtype(cmd) {
+    fn exec(&mut self, cmd: &str, args: Vec<&str>) -> ConsoleResult {
+        match self.cmdtype(cmd) {
             CmdType::Prop => {
                 if let Some(val) = args.get(0) {
                     self.set(cmd, val)
@@ -212,16 +213,29 @@ impl<T: cvar::IVisit> Console for T {
                     self.get(cmd)
                 }
             },
-            CmdType::Action => self.call(cmd, &args, console),
-            CmdType::List => self.find(|path| path.starts_with(cmd)),
+            CmdType::Action => {
+                let mut out = String::new();
+                self.call(cmd, &args, &mut out);
+                out.into()
+            },
+            CmdType::List => self.find(& |path: &str| path.starts_with(cmd)),
             CmdType::NotFound => {
                 ConsoleError::UnknownCommand.into()
             },
-        };
-
-        console.write_result(ret);
+        }
     }
 }
+
+pub trait VisitMutCmds {
+    fn cmd_help(&mut self);
+}
+
+impl<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode))> VisitMutCmds for cvar::VisitMut<F> {
+    fn cmd_help(&mut self) {
+        let _ = self.help("");
+    }
+}
+
 
 #[derive(Debug)]
 pub struct TextSpan {
@@ -320,21 +334,21 @@ impl cvar::IConsole for ColoredConsole {
 /// The imgui frontend for cvars
 /// Call `build` during your rendering stage
 pub struct ConsoleWindow {
-    root: Box<dyn IVisitExt + Send + Sync>,
+    //root: Box<dyn IVisitExt + Send + Sync>,
     console: ColoredConsole,
     prompt: ImString,
     //history: Vec<String>,
 }
 
 impl ConsoleWindow {
-    pub fn new(node: Box<dyn IVisitExt + Send + Sync>) -> Self {
-        let mut console = ConsoleWindow {
-            root: node,
+    pub fn new() -> Self { //node: Box<dyn IVisitExt + Send + Sync>) -> Self {
+        let console = ConsoleWindow {
+            //root: node,
             console: ColoredConsole{ buf: vec![] },
             prompt: ImString::with_capacity(100),
             //history: vec![],
         };
-        console.reset_all();
+        //console.reset_all();
         console
     }
 }
@@ -363,7 +377,7 @@ impl ConsoleWindow {
         });
     }
 
-    pub fn build(&mut self, ui: &imgui::Ui, window: imgui::Window) {
+    pub fn build(&mut self, ui: &imgui::Ui, window: imgui::Window, root: &mut dyn IVisitExt) {
         window.size([520., 600.], imgui::Condition::FirstUseEver)
         .build(ui, move || {
             if ui.is_item_hovered() {
@@ -428,7 +442,7 @@ impl ConsoleWindow {
             if input {
                 self.draw_prompt();
                 self.write(&format!("{}\n", self.prompt));
-                self.run_cmd(self.prompt.to_string());
+                self.run_cmd(root, self.prompt.to_string());
                 self.prompt.clear();
                 reclaim_focus = true;
             }
@@ -441,40 +455,67 @@ impl ConsoleWindow {
         });
     }
 
-    pub fn run_cmd(&mut self, cmd: String) {
+    /*pub fn close(&mut self,) {
+        use cvar::IConsole;
+        console.write_error(&ConsoleError::Unimplemented);
+    }*/
+
+    pub fn run_cmd(&mut self, root: &mut dyn IVisitExt, cmd: String) {
         let mut parts = cmd.split(' '); // TODO: shellesc
         let cmd = parts.next().unwrap_or("");
         let args = parts.collect::<Vec<_>>();
 
-        let mut console = ColoredConsole{ buf: vec![] };
-        self.exec(cmd, args, &mut console);
-        self.console.buf.append(&mut console.buf);
+        //let mut root = VisitMutExt::new(|f, console| {
+        let mut root = VisitMutExt(|f, console| {
+            root.visit_mut_ext(f, console);
+        });
+
+        let result = root.exec(cmd, args);
+        self.console.write_result(result);
+        self.console.buf.append(&mut root.console.buf);
+    }
+}
+
+pub trait IVisitExt {
+    fn visit_mut_ext(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode), console: &mut dyn IConsoleExt);
+}
+
+pub struct VisitMutExt<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode), &mut dyn IConsoleExt)> {
+    pub closure: F,
+    pub console: ColoredConsole,
+}
+
+impl<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode), &mut dyn IConsoleExt)> VisitMutExt<F> {
+    pub fn new(closure: F) -> Self {
+        VisitMutExt {
+            closure,
+            console: ColoredConsole { buf: vec![] },
+        }
     }
 
-
-    pub fn cmd_help(&mut self, args: &[&str]) {
+    pub fn cmd_help(&mut self, args: &[&str], console: &mut dyn IConsoleExt) {
         let out = {
             if let Some(var) = args.get(0) {
                 self.help(var)
             } else {
-                self.find(|_| true)
+                self.find(& |_| true)
             }
         };
-        self.console.write_result(out);
+        console.write_result(out);
     }
 
-    pub fn cmd_find(&mut self, args: &[&str]) {
+    pub fn cmd_find(&mut self, args: &[&str], console: &mut dyn IConsoleExt) {
         let out = {
             if let Some(var) = args.get(0) {
-                self.find(|path| path.contains(var) && path != "find")
+                self.find(& |path: &str| path.contains(var) && path != "find")
             } else {
-                Err(ConsoleError::InvalidUsage("find <name>".to_string())).into()
+                ConsoleError::InvalidUsage("find <name>".to_string()).into()
             }
         };
-        self.console.write_result(out);
+        console.write_result(out);
     }
 
-    pub fn cmd_reset(&mut self, args: &[&str]) {
+    pub fn cmd_reset(&mut self, args: &[&str], console: &mut dyn IConsoleExt) {
         let out = {
             if let Some(var) = args.get(0) {
                 self.reset(var)
@@ -482,43 +523,33 @@ impl ConsoleWindow {
                 self.reset_all()
             }
         };
-        self.console.write_result(out);
-    }
-
-    pub fn close(&mut self) {
-        use cvar::IConsole;
-        self.console.write_error(&ConsoleError::Unimplemented);
-
-        //self.open = false;
+        console.write_result(out);
     }
 }
 
-pub trait IVisitExt {
-    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode), console: &mut dyn IConsoleExt);
+pub fn VisitMutExt<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode), &mut dyn IConsoleExt)>(f: F) -> VisitMutExt<F> {
+    VisitMutExt::new(f)
 }
 
-#[derive(Copy, Clone, Debug)]
-pub struct VisitMutExt<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode), &mut dyn IConsoleExt)>(pub F);
 impl<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode), &mut dyn IConsoleExt)> IVisitExt for VisitMutExt<F> {
-	fn visit_mut(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode), console: &mut dyn IConsoleExt) {
-		(self.0)(f, console)
+	fn visit_mut_ext(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode), console: &mut dyn IConsoleExt) {
+		(self.closure)(f, console);
 	}
 }
 
-impl cvar::IVisit for ConsoleWindow {
-    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode)) {
-        //f(&mut cvar::Action("close", "Close the console", |_, _| self.close()));
-        f(&mut cvar::Action("help", "List all commands and properties", |args, _| self.cmd_help(args)));
-        f(&mut cvar::Action("clear", "Clear the screen", |_, _| self.clear()));
-        f(&mut cvar::Action("find", "<text>\nSearch for matching commands", |args, _| self.cmd_find(args)));
-        f(&mut cvar::Action("reset", "<var>\nSet a property to its default", |args, _| self.cmd_reset(args)));
-        self.root.visit_mut(f, &mut self.console);
-    }
+impl<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode), &mut dyn IConsoleExt)> cvar::IVisit for VisitMutExt<F> {
+	fn visit_mut(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode)) {
+        let mut console = ColoredConsole { buf: vec![] };
+        f(&mut cvar::Action("help", "List all commands and properties", |args, _| self.cmd_help(args, &mut console)));
+        f(&mut cvar::Action("find", "<text>\nSearch for matching commands", |args, _| self.cmd_find(args, &mut console)));
+        f(&mut cvar::Action("reset", "<var>\nSet a property to its default", |args, _| self.cmd_reset(args, &mut console)));
+        self.visit_mut_ext(f, &mut console);
+        self.console = console
+	}
 }
 
 /// Create a window and initialize the console window with the default config.
 /// Be sure to call build on the returned window during your rendering stage
-pub fn init<T>(node: T) -> ConsoleWindow
-where T: 'static + IVisitExt + Send  + Sync {
-    ConsoleWindow::new(Box::new(node))
+pub fn init() -> ConsoleWindow {
+    ConsoleWindow::new()
 }

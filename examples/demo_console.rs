@@ -28,7 +28,7 @@ impl User {
 }
 
 impl IVisitExt for User {
-    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode), console: &mut dyn IConsoleExt) {
+    fn visit_mut_ext(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode), console: &mut dyn IConsoleExt) {
         f(&mut cvar::Property("name", "Persons name", &mut self.name, "<Unknown>".to_string()));
         f(&mut cvar::Property("age", "Persons age", &mut self.age, 0));
         f(&mut cvar::Action("greet", "Say hi", |_args, _| self.greet(console)));
@@ -47,7 +47,7 @@ impl Foobar {
 }
 
 impl IVisitExt for Foobar {
-    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode), console: &mut dyn IConsoleExt) {
+    fn visit_mut_ext(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode), console: &mut dyn IConsoleExt) {
         f(&mut cvar::Action("colors", "Test colors", |_, _| self.colors(console)));
     }
 }
@@ -78,8 +78,8 @@ fn main() -> amethyst::Result<()> {
         f(&mut cvar::Action("red", "Test red", |_, _| red(console)));
         f(&mut cvar::Action("green", "Test green", |_, _| green(console)));
         f(&mut cvar::Action("blue", "Test blue", |_, _| blue(console)));
-        foobar.visit_mut(f, console);
-        user.visit_mut(f, console);
+        foobar.visit_mut_ext(f, console);
+        user.visit_mut_ext(f, console);
     });
 
     let console_system = imgui_console::create_system(root);
