@@ -334,21 +334,18 @@ impl cvar::IConsole for ColoredConsole {
 /// The imgui frontend for cvars
 /// Call `build` during your rendering stage
 pub struct ConsoleWindow {
-    //root: Box<dyn IVisitExt + Send + Sync>,
     console: ColoredConsole,
     prompt: ImString,
     //history: Vec<String>,
 }
 
 impl ConsoleWindow {
-    pub fn new() -> Self { //node: Box<dyn IVisitExt + Send + Sync>) -> Self {
+    pub fn new() -> Self {
         let console = ConsoleWindow {
-            //root: node,
             console: ColoredConsole{ buf: vec![] },
             prompt: ImString::with_capacity(100),
             //history: vec![],
         };
-        //console.reset_all();
         console
     }
 }
@@ -465,7 +462,6 @@ impl ConsoleWindow {
         let cmd = parts.next().unwrap_or("");
         let args = parts.collect::<Vec<_>>();
 
-        //let mut root = VisitMutExt::new(|f, console| {
         let mut root = VisitMutExt(|f, console| {
             root.visit_mut_ext(f, console);
         });

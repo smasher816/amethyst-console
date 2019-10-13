@@ -8,61 +8,89 @@ use amethyst::{
     prelude::*,
     renderer::{bundle::RenderingBundle, types::DefaultBackend, RenderToWindow},
     utils::application_root_dir,
+    ecs::{Read, System}
 };
 
-use imgui_console::{amethyst_imgui::RenderImgui, ConsoleError, ConsoleResult, IVisitExt, IConsoleExt, VisitMutExt};
+use imgui_console::{amethyst_imgui::RenderImgui, IVisitExt, IConsoleExt};
+
+pub struct ArenaConfig {
+    pub height: f32,
+    pub width: f32,
+}
+impl Default for ArenaConfig {
+    fn default() -> Self {
+        ArenaConfig {
+            height: 100.0,
+            width: 100.0,
+        }
+    }
+}
+impl IVisitExt for ArenaConfig {
+    fn visit_mut_ext(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode), _console: &mut dyn IConsoleExt) {
+        let default = Self::default();
+        f(&mut cvar::Property("width", "Arena width", &mut self.width, default.width));
+        f(&mut cvar::Property("height", "Arena height", &mut self.height, default.height));
+    }
+}
+
+pub struct PaddleConfig {
+    pub velocity: f32,
+    pub color: String,
+}
+impl Default for PaddleConfig {
+    fn default() -> Self {
+        PaddleConfig {
+            velocity: 3.0,
+            color: "white".to_string(),
+        }
+    }
+}
+impl IVisitExt for PaddleConfig {
+    fn visit_mut_ext(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode), _console: &mut dyn IConsoleExt) {
+        let default = Self::default();
+        f(&mut cvar::Property("velocity", "paddle velocity", &mut self.velocity, default.velocity));
+        f(&mut cvar::Property("color", "paddle color", &mut self.color, default.color));
+    }
+}
+
+pub fn color_test(console: &mut dyn IConsoleExt) {
+    for r in (0..=2).rev() {
+        for g in (0..=2).rev() {
+            for b in (0..=2).rev() {
+                console.write_colored([(r as f32) / 2., (g as f32) / 2., (b as f32) / 2., 1.], " ■");
+            }
+        }
+    }
+}
 
 #[derive(Default)]
-pub struct User {
-    pub name: String,
-    pub age: u32,
+pub struct GameConfig {
+    pub arena: ArenaConfig,
+    pub paddle: PaddleConfig,
 }
-impl User {
-    pub fn greet(&self, console: &mut dyn IConsoleExt) {
-        let _ = writeln!(console, "Hello, {}!", self.name);
-        console.write("Test\n");
-        console.write_error(&ConsoleError::InvalidUsage("Some error\n".to_string()));
-        console.write_result(ConsoleResult(Err(ConsoleError::InvalidUsage("Woo".to_string()))));
-        console.write_colored([0., 1., 0., 1.], "IM GREEN\n");
-    }
-}
-
-impl IVisitExt for User {
+impl IVisitExt for GameConfig {
     fn visit_mut_ext(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode), console: &mut dyn IConsoleExt) {
-        f(&mut cvar::Property("name", "Persons name", &mut self.name, "<Unknown>".to_string()));
-        f(&mut cvar::Property("age", "Persons age", &mut self.age, 0));
-        f(&mut cvar::Action("greet", "Say hi", |_args, _| self.greet(console)));
+        self.arena.visit_mut_ext(f, console);
+        self.paddle.visit_mut_ext(f, console);
+        f(&mut cvar::Action("color_test", "Test console colors", |_, _| color_test(console)));
     }
 }
 
-pub struct Foobar {
-}
 
-impl Foobar {
-    pub fn colors(&self, console: &mut dyn IConsoleExt) {
-        console.write_colored([1., 0., 0., 1.], "RED ");
-        console.write_colored([0., 1., 0., 1.], "GREEN ");
-        console.write_colored([0., 0., 1., 1.], "BLUE\n");
+#[derive(Default)]
+pub struct ExampleSystem {}
+
+impl<'s> System<'s> for ExampleSystem {
+    type SystemData = (
+            Read<'s, GameConfig>,
+        );
+
+    fn run(&mut self, (game_config, ): Self::SystemData) {
+        let arena_config = &game_config.arena;
+        println!("{} x {}", arena_config.width, arena_config.height);
     }
 }
 
-impl IVisitExt for Foobar {
-    fn visit_mut_ext(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode), console: &mut dyn IConsoleExt) {
-        f(&mut cvar::Action("colors", "Test colors", |_, _| self.colors(console)));
-    }
-}
-
-pub fn red(console: &mut dyn IConsoleExt) {
-    console.write_colored([1., 0., 0., 1.], "RED\n");
-}
-
-pub fn green(console: &mut dyn IConsoleExt) {
-    console.write_colored([0., 1., 0., 1.], "GREEN\n");
-}
-
-pub fn blue(console: &mut dyn IConsoleExt) {
-    console.write_colored([0., 0., 1., 1.], "BLUE\n");
-}
 
 struct Example;
 impl SimpleState for Example {}
@@ -72,21 +100,12 @@ fn main() -> amethyst::Result<()> {
     let app_root = application_root_dir()?;
     let display_config_path = app_root.join("examples/display.ron");
 
-    let mut user = User::default();
-    let mut foobar = Foobar { };
-    let root = VisitMutExt(move |f, console| {
-        f(&mut cvar::Action("red", "Test red", |_, _| red(console)));
-        f(&mut cvar::Action("green", "Test green", |_, _| green(console)));
-        f(&mut cvar::Action("blue", "Test blue", |_, _| blue(console)));
-        foobar.visit_mut_ext(f, console);
-        user.visit_mut_ext(f, console);
-    });
-
-    let console_system = imgui_console::create_system(root);
+    let console_system = imgui_console::create_system::<GameConfig>();
 
     let game_data = GameDataBuilder::default()
         .with_barrier()
         .with_system_desc(console_system, "imgui_console", &[]) // <--- ADDED
+        .with(ExampleSystem::default(), "example", &[])
         .with_bundle(InputBundle::<StringBindings>::new()
                      .with_bindings_from_file("examples/input.ron")?)?
         .with_bundle(
