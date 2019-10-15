@@ -1,0 +1,7 @@
+(
+    axes: {
+    },
+    actions: {
+        "toggle_console": [[Key(Escape)]],
+    },
+)

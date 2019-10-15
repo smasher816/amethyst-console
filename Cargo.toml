@@ -1,11 +1,11 @@
 [package]
-name = "imgui-console"
+name = "amethyst-console"
 version = "0.1.0"
 description = "imgui frontent to cvar"
-repository = "https://github.com/Smasher816/imgui-log"
+repository = "https://github.com/Smasher816/amethyst-console"
 authors = ["Smasher816 <Smasher816@gmail.com>"]
 license = "MIT/Apache-2.0"
-keywords = ["amethyst", "imgui"]
+keywords = ["amethyst", "imgui", "console", "cvar"]
 categories = ["development-tools::debugging", "game-engines", "gui"]
 readme = "README.md"
 edition = "2018"
@@ -25,20 +25,4 @@ imgui = "0.2"
 log = "0.4.8"
 cvar = "0.2.0"
 amethyst = { version = "0.13.2", optional = true }
-amethyst-imgui = { version = "0.5.1", optional = true }
-
-[patch.crates-io]
-rendy = { path = './rendy/rendy' }
-rendy-chain = { path = './rendy/chain' }
-rendy-command = { path = './rendy/command' }
-rendy-descriptor = { path = './rendy/descriptor' }
-rendy-factory = { path = './rendy/factory' }
-rendy-frame = { path = './rendy/frame' }
-rendy-graph = { path = './rendy/graph' }
-rendy-memory = { path = './rendy/memory' }
-rendy-mesh = { path = './rendy/mesh' }
-rendy-resource = { path = './rendy/resource' }
-rendy-shader = { path = './rendy/shader' }
-rendy-texture = { path = './rendy/texture' }
-rendy-util = { path = './rendy/util' }
-rendy-wsi = { path = './rendy/wsi' }
+amethyst-imgui = { version = "0.5.2", optional = true }

@@ -4,13 +4,20 @@ mod amethyst;
 #[cfg(feature = "amethyst-system")]
 pub use crate::amethyst::*;
 
-use imgui::{ImString, im_str};
+use imgui::{im_str, ImString};
 
+/// cvar varients. Used to disambiguate which action to perform when unspecified.
 #[derive(Debug)]
 pub enum CmdType {
-    Prop, List, Action, NotFound
+    Prop,
+    List,
+    Action,
+    NotFound,
 }
 
+/// Error type for ConsoleResult
+///
+/// Should cover most common use cases, but anything Custom will be displayed as is.
 #[derive(Debug)]
 pub enum ConsoleError {
     UnknownProperty,
@@ -19,9 +26,13 @@ pub enum ConsoleError {
     InvalidUsage(String),
     NoResults,
     Unimplemented,
-    Custom(String),
+    Custom(TextSpan),
 }
 
+/// Result from all CvarExt commands
+///
+/// Provides a unified way to handle errors, especially with nested calls.
+/// Use `IConsoleExt.write_result` to display to the user.
 #[derive(Debug)]
 pub struct ConsoleResult(pub Result<String, ConsoleError>);
 
@@ -65,23 +76,30 @@ impl std::fmt::Display for ConsoleError {
             ConsoleError::InvalidUsage(e) => write!(f, "Usage: {}", e),
             ConsoleError::NoResults => f.write_str("No results"),
             ConsoleError::Unimplemented => f.write_str("Unimplemented"),
-            ConsoleError::Custom(e) => f.write_str(e),
+            ConsoleError::Custom(e) => f.write_str(&e.text),
         }
     }
 }
 
 impl std::error::Error for ConsoleError {}
 
-pub trait NodeExt {
+/// Extra features for a node. Provides consistent formatting for help entries.
+trait NodeExt {
     fn details(&mut self, path: &str, out: &mut String);
     fn kind(&mut self) -> CmdType;
 }
 
-impl<'a> NodeExt for dyn cvar::INode + 'a{
+impl<'a> NodeExt for dyn cvar::INode + 'a {
     fn details(&mut self, path: &str, out: &mut String) {
         let desc = self.description().to_string();
         match self.as_node_mut() {
-            cvar::NodeMut::Prop(prop) => out.push_str(&format!("{}: {} (Default: {})\n\t{}\n", path, prop.get(), prop.default(), desc)),
+            cvar::NodeMut::Prop(prop) => out.push_str(&format!(
+                "{}: {} (Default: {})\n\t{}\n",
+                path,
+                prop.get(),
+                prop.default(),
+                desc
+            )),
             cvar::NodeMut::Action(_) => {
                 let (args, desc) = {
                     let mut parts = desc.split('\n');
@@ -100,7 +118,7 @@ impl<'a> NodeExt for dyn cvar::INode + 'a{
                 }
                 out.push_str(&format!(":\n\t{}\n", desc));
             }
-            _ => {},
+            _ => {}
         }
     }
 
@@ -113,19 +131,25 @@ impl<'a> NodeExt for dyn cvar::INode + 'a{
     }
 }
 
-pub trait Console {
+/// Handlers for all the basic builtin console commands.
+///
+/// These will be available on any config you create.
+pub trait CvarExt {
     fn get(&mut self, var: &str) -> ConsoleResult;
     fn set(&mut self, var: &str, val: &str) -> ConsoleResult;
-    fn call(&mut self, cmd: &str, args: &[&str], console: &mut dyn cvar::IConsole) -> ConsoleResult;
+    fn call(&mut self, cmd: &str, args: &[&str], console: &mut dyn cvar::IConsole)
+        -> ConsoleResult;
     fn reset(&mut self, var: &str) -> ConsoleResult;
     fn reset_all(&mut self) -> ConsoleResult;
-    fn find(&mut self, filter: &(dyn Fn(&str)->bool)) -> ConsoleResult;
+    fn find(&mut self, filter: &(dyn Fn(&str) -> bool)) -> ConsoleResult;
     fn help(&mut self, var: &str) -> ConsoleResult;
     fn cmdtype(&mut self, var: &str) -> CmdType;
+
+    /// Turn a textual command into a respective get/set/call action
     fn exec(&mut self, cmd: &str, args: Vec<&str>) -> ConsoleResult;
 }
 
-impl<T: cvar::IVisit> Console for T {
+impl<T: cvar::IVisit> CvarExt for T {
     fn get(&mut self, var: &str) -> ConsoleResult {
         if let Some(val) = cvar::console::get(&mut *self, var) {
             val.into()
@@ -143,11 +167,17 @@ impl<T: cvar::IVisit> Console for T {
                     Err(ConsoleError::UnknownProperty)
                 }
             }
-            Err(e) => Err(ConsoleError::InvalidValue(e.to_string()))
-        }.into()
+            Err(e) => Err(ConsoleError::InvalidValue(e.to_string())),
+        }
+        .into()
     }
 
-    fn call(&mut self, cmd: &str, args: &[&str], console: &mut dyn cvar::IConsole) -> ConsoleResult {
+    fn call(
+        &mut self,
+        cmd: &str,
+        args: &[&str],
+        console: &mut dyn cvar::IConsole,
+    ) -> ConsoleResult {
         if cvar::console::invoke(&mut *self, cmd, &args, console) {
             "".into()
         } else {
@@ -168,7 +198,7 @@ impl<T: cvar::IVisit> Console for T {
         "OK".into()
     }
 
-    fn find(&mut self, filter: &(dyn Fn(&str)->bool)) -> ConsoleResult {
+    fn find(&mut self, filter: &(dyn Fn(&str) -> bool)) -> ConsoleResult {
         let mut out = String::new();
         cvar::console::walk(&mut *self, |path, node| {
             if filter(path) {
@@ -212,38 +242,31 @@ impl<T: cvar::IVisit> Console for T {
                 } else {
                     self.get(cmd)
                 }
-            },
+            }
             CmdType::Action => {
                 let mut out = String::new();
                 self.call(cmd, &args, &mut out);
                 out.into()
-            },
-            CmdType::List => self.find(& |path: &str| path.starts_with(cmd)),
-            CmdType::NotFound => {
-                ConsoleError::UnknownCommand.into()
-            },
+            }
+            CmdType::List => self.find(&|path: &str| path.starts_with(cmd)),
+            CmdType::NotFound => ConsoleError::UnknownCommand.into(),
         }
     }
 }
 
-pub trait VisitMutCmds {
-    fn cmd_help(&mut self);
-}
-
-impl<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode))> VisitMutCmds for cvar::VisitMut<F> {
-    fn cmd_help(&mut self) {
-        let _ = self.help("");
-    }
-}
-
-
+/// A piece of text with attached metadata such as color
+///
+/// Construct manually, or convert from a `String` / `ConsoleError` if you want the default color.
 #[derive(Debug)]
 pub struct TextSpan {
-    color: [f32; 4],
-    text: String,
+    pub color: [f32; 4],
+    pub text: String,
 }
 
-impl<T> From<T> for TextSpan where T: Into<String> {
+impl<T> From<T> for TextSpan
+where
+    T: Into<String>,
+{
     fn from(t: T) -> TextSpan {
         TextSpan {
             color: [1., 1., 1., 1.],
@@ -261,6 +284,9 @@ impl From<ConsoleError> for TextSpan {
     }
 }
 
+/// Extended version of cvar::IConsole with support for colored text
+///
+/// See `ColoredConsole` for a concrete implementation
 pub trait IConsoleExt: cvar::IConsole {
     fn write(&mut self, text: &str);
     fn write_result(&mut self, result: ConsoleResult);
@@ -273,16 +299,26 @@ impl std::fmt::Display for TextSpan {
     }
 }
 
+/// Extended version of cvar::IConsole with support for colored text
+///
+/// See `IConsoleExt` for extra methods.
+/// This will usually be managed by a ConsoleWindow.
 pub struct ColoredConsole {
     buf: Vec<TextSpan>,
 }
 
 impl ColoredConsole {
-    pub fn write<S>(&mut self, text: S) where S: Into<TextSpan> {
+    pub fn write<S>(&mut self, text: S)
+    where
+        S: Into<TextSpan>,
+    {
         self.buf.push(text.into());
     }
 
-    pub fn writeln<S>(&mut self, text: S) where S: Into<TextSpan> {
+    pub fn writeln<S>(&mut self, text: S)
+    where
+        S: Into<TextSpan>,
+    {
         let mut span = text.into();
         span.text = span.text.trim_end().to_string();
         if !span.text.is_empty() {
@@ -302,7 +338,7 @@ impl IConsoleExt for ColoredConsole {
         match &*result {
             Ok(output) => {
                 self.writeln(output);
-            },
+            }
             Err(e) => {
                 use cvar::IConsole;
                 self.write_error(e);
@@ -327,12 +363,14 @@ impl std::fmt::Write for ColoredConsole {
 
 impl cvar::IConsole for ColoredConsole {
     fn write_error(&mut self, err: &(dyn std::error::Error + 'static)) {
-        self.writeln(ConsoleError::Custom(err.to_string()));
+        self.writeln(ConsoleError::Custom(err.to_string().into()));
     }
 }
 
-/// The imgui frontend for cvars
-/// Call `build` during your rendering stage
+/// imgui frontend for cvars.
+/// Call `build` during your rendering stage.
+///
+/// Will handle reading user input, dispatching commands, and displaying output.
 pub struct ConsoleWindow {
     console: ColoredConsole,
     prompt: ImString,
@@ -341,12 +379,17 @@ pub struct ConsoleWindow {
 
 impl ConsoleWindow {
     pub fn new() -> Self {
-        let console = ConsoleWindow {
-            console: ColoredConsole{ buf: vec![] },
+        ConsoleWindow {
+            console: ColoredConsole { buf: vec![] },
             prompt: ImString::with_capacity(100),
             //history: vec![],
-        };
-        console
+        }
+    }
+}
+
+impl Default for ConsoleWindow {
+    fn default() -> Self {
+        ConsoleWindow::new()
     }
 }
 
@@ -355,101 +398,106 @@ impl ConsoleWindow {
         self.console.buf.clear();
     }
 
-    pub fn write<S>(&mut self, text: S) where S: Into<TextSpan> {
+    pub fn write<S>(&mut self, text: S)
+    where
+        S: Into<TextSpan>,
+    {
         self.console.write(text);
     }
 
-    pub fn writeln<S>(&mut self, text: S) where S: Into<TextSpan> {
+    pub fn writeln<S>(&mut self, text: S)
+    where
+        S: Into<TextSpan>,
+    {
         self.console.writeln(text);
     }
 
-    fn write_colored(&mut self, c: [f32; 4], t: &str) {
+    pub fn write_colored(&mut self, c: [f32; 4], t: &str) {
         self.console.write_colored(c, t);
     }
 
     pub fn draw_prompt(&mut self) {
         self.write(TextSpan {
             text: " > ".to_string(),
-            color: [0., 1., 1., 1.]
+            color: [0., 1., 1., 1.],
         });
     }
 
     pub fn build(&mut self, ui: &imgui::Ui, window: imgui::Window, root: &mut dyn IVisitExt) {
-        window.size([520., 600.], imgui::Condition::FirstUseEver)
-        .build(ui, move || {
-            if ui.is_item_hovered() {
-                ui.popup(im_str!("context_menu"), || {
-                    if imgui::MenuItem::new(im_str!("Close")).build(ui) {
-                        //self.close();
+        window
+            .size([520., 600.], imgui::Condition::FirstUseEver)
+            .build(ui, move || {
+                if ui.is_item_hovered() {
+                    ui.popup(im_str!("context_menu"), || {
+                        if imgui::MenuItem::new(im_str!("Close")).build(ui) {
+                            //self.close();
+                        }
+                    })
+                }
+
+                let clear = ui.button(im_str!("Clear"), [0., 0.]);
+                ui.same_line(0.);
+                let copy = ui.button(im_str!("Copy"), [0., 0.]);
+                ui.separator();
+
+                let footer_height_to_reserve = 1.5 * ui.frame_height_with_spacing();
+                let child = imgui::ChildWindow::new(imgui::Id::Str("scrolling"))
+                    .size([0., -footer_height_to_reserve])
+                    .horizontal_scrollbar(true);
+                child.build(ui, || {
+                    if clear {
+                        self.clear();
                     }
-                })
-            }
-
-
-            let clear = ui.button(im_str!("Clear"), [0., 0.]);
-            ui.same_line(0.);
-            let copy = ui.button(im_str!("Copy"), [0., 0.]);
-            ui.separator();
-
-            let footer_height_to_reserve = 1.5 * ui.frame_height_with_spacing();
-            let child = imgui::ChildWindow::new(imgui::Id::Str("scrolling"))
-                .size([0., -footer_height_to_reserve])
-                .horizontal_scrollbar(true);
-            child.build(ui, || {
-                if clear {
-                    self.clear();
-                }
-                let buf = &mut self.console.buf;
-                if copy {
-                    ui.set_clipboard_text(&ImString::new(
-                        buf.iter()
-                            .map(|l| l.to_string())
-                            .collect::<Vec<String>>()
-                            .join("\n"),
-                    ));
-                }
-
-                let style = ui.push_style_var(imgui::StyleVar::ItemSpacing([0., 0.]));
-
-                for span in buf {
-                    /*if span.text.contains("\r") {
-                        let pos = ui.cursor_pos();
-                        ui.set_cursor_pos([0., pos[1]]);
-                    }*/
-                    ui.text_colored(span.color, &span.text);
-                    if !span.text.contains('\n') {
-                        ui.same_line(0.);
+                    let buf = &mut self.console.buf;
+                    if copy {
+                        ui.set_clipboard_text(&ImString::new(
+                            buf.iter()
+                                .map(|l| l.to_string())
+                                .collect::<Vec<String>>()
+                                .join("\n"),
+                        ));
                     }
+
+                    let style = ui.push_style_var(imgui::StyleVar::ItemSpacing([0., 0.]));
+
+                    for span in buf {
+                        /*if span.text.contains("\r") {
+                            let pos = ui.cursor_pos();
+                            ui.set_cursor_pos([0., pos[1]]);
+                        }*/
+                        ui.text_colored(span.color, &span.text);
+                        if !span.text.contains('\n') {
+                            ui.same_line(0.);
+                        }
+                    }
+
+                    style.pop(ui);
+
+                    if ui.scroll_y() >= ui.scroll_max_y() {
+                        ui.set_scroll_here_y_with_ratio(1.0);
+                    }
+                });
+
+                ui.separator();
+                let mut reclaim_focus = false;
+                let input = imgui::InputText::new(ui, im_str!("cmd"), &mut self.prompt)
+                    .enter_returns_true(true)
+                    //.callback_completion(true)
+                    //.callback_history(true)
+                    .build();
+                if input {
+                    self.draw_prompt();
+                    self.write(&format!("{}\n", self.prompt));
+                    self.run_cmd(root, self.prompt.to_string());
+                    self.prompt.clear();
+                    reclaim_focus = true;
                 }
 
-                style.pop(ui);
-
-                if ui.scroll_y() >= ui.scroll_max_y() {
-                    ui.set_scroll_here_y_with_ratio(1.0);
+                ui.set_item_default_focus();
+                if reclaim_focus {
+                    ui.set_keyboard_focus_here(imgui::FocusedWidget::Previous);
                 }
             });
-
-            ui.separator();
-            let mut reclaim_focus = false;
-            let input = imgui::InputText::new(ui, im_str!("cmd"), &mut self.prompt)
-                .enter_returns_true(true)
-                //.callback_completion(true)
-                //.callback_history(true)
-                .build();
-            if input {
-                self.draw_prompt();
-                self.write(&format!("{}\n", self.prompt));
-                self.run_cmd(root, self.prompt.to_string());
-                self.prompt.clear();
-                reclaim_focus = true;
-            }
-
-            ui.set_item_default_focus();
-            if reclaim_focus {
-                ui.set_keyboard_focus_here(imgui::FocusedWidget::Previous);
-            }
-
-        });
     }
 
     /*pub fn close(&mut self,) {
@@ -472,13 +520,27 @@ impl ConsoleWindow {
     }
 }
 
+/// Wrapper around cvar::IVisit with support for colored console output from commands
+///
+/// Add this trait to anything you want to be configurable in the console.
 pub trait IVisitExt {
-    fn visit_mut_ext(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode), console: &mut dyn IConsoleExt);
+    /// Call f(...) for any property or action you want to add user accessible.
+    /// See cvar::IVisit or the readme for more info.
+    fn visit_mut_ext(
+        &mut self,
+        f: &mut dyn FnMut(&mut dyn cvar::INode),
+        console: &mut dyn IConsoleExt,
+    );
 }
 
+/// Version of cvar::VisitMut with support for colored console output.
+///
+/// Uses a closure to wrap new commands around an extisting struct without having to create your
+/// own containers.
+/// `ConsoleWindow` should automatically handle adding these commands for you.
 pub struct VisitMutExt<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode), &mut dyn IConsoleExt)> {
-    pub closure: F,
-    pub console: ColoredConsole,
+    closure: F,
+    console: ColoredConsole,
 }
 
 impl<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode), &mut dyn IConsoleExt)> VisitMutExt<F> {
@@ -494,7 +556,7 @@ impl<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode), &mut dyn IConsoleExt)> Visit
             if let Some(var) = args.get(0) {
                 self.help(var)
             } else {
-                self.find(& |_| true)
+                self.find(&|_| true)
             }
         };
         console.write_result(out);
@@ -503,7 +565,7 @@ impl<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode), &mut dyn IConsoleExt)> Visit
     pub fn cmd_find(&mut self, args: &[&str], console: &mut dyn IConsoleExt) {
         let out = {
             if let Some(var) = args.get(0) {
-                self.find(& |path: &str| path.contains(var) && path != "find")
+                self.find(&|path: &str| path.contains(var) && path != "find")
             } else {
                 ConsoleError::InvalidUsage("find <name>".to_string()).into()
             }
@@ -523,29 +585,58 @@ impl<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode), &mut dyn IConsoleExt)> Visit
     }
 }
 
-pub fn VisitMutExt<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode), &mut dyn IConsoleExt)>(f: F) -> VisitMutExt<F> {
+impl<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode), &mut dyn IConsoleExt)> IVisitExt
+    for VisitMutExt<F>
+{
+    fn visit_mut_ext(
+        &mut self,
+        f: &mut dyn FnMut(&mut dyn cvar::INode),
+        console: &mut dyn IConsoleExt,
+    ) {
+        (self.closure)(f, console);
+    }
+}
+
+impl<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode), &mut dyn IConsoleExt)> cvar::IVisit
+    for VisitMutExt<F>
+{
+    fn visit_mut(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode)) {
+        let mut console = ColoredConsole { buf: vec![] };
+        f(&mut cvar::Action(
+            "help",
+            "List all commands and properties",
+            |args, _| self.cmd_help(args, &mut console),
+        ));
+        f(&mut cvar::Action(
+            "find",
+            "<text>\nSearch for matching commands",
+            |args, _| self.cmd_find(args, &mut console),
+        ));
+        f(&mut cvar::Action(
+            "reset",
+            "<var>\nSet a property to its default",
+            |args, _| self.cmd_reset(args, &mut console),
+        ));
+        self.visit_mut_ext(f, &mut console);
+        self.console = console
+    }
+}
+
+/// Construct a VisitMutExt closure
+///
+/// Allows you to wrap existing structs together, or to add new commands
+/// without having to create a new datatype.
+#[allow(non_snake_case)]
+pub fn VisitMutExt<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode), &mut dyn IConsoleExt)>(
+    f: F,
+) -> VisitMutExt<F> {
     VisitMutExt::new(f)
 }
 
-impl<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode), &mut dyn IConsoleExt)> IVisitExt for VisitMutExt<F> {
-	fn visit_mut_ext(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode), console: &mut dyn IConsoleExt) {
-		(self.closure)(f, console);
-	}
-}
-
-impl<F: FnMut(&mut dyn FnMut(&mut dyn cvar::INode), &mut dyn IConsoleExt)> cvar::IVisit for VisitMutExt<F> {
-	fn visit_mut(&mut self, f: &mut dyn FnMut(&mut dyn cvar::INode)) {
-        let mut console = ColoredConsole { buf: vec![] };
-        f(&mut cvar::Action("help", "List all commands and properties", |args, _| self.cmd_help(args, &mut console)));
-        f(&mut cvar::Action("find", "<text>\nSearch for matching commands", |args, _| self.cmd_find(args, &mut console)));
-        f(&mut cvar::Action("reset", "<var>\nSet a property to its default", |args, _| self.cmd_reset(args, &mut console)));
-        self.visit_mut_ext(f, &mut console);
-        self.console = console
-	}
-}
-
-/// Create a window and initialize the console window with the default config.
-/// Be sure to call build on the returned window during your rendering stage
-pub fn init() -> ConsoleWindow {
+/// Create a new standalone console window.
+/// Use `create_system` instead if you want amethyst integration.
+///
+/// Be sure to call `build` on the returned window during your rendering stage
+pub fn create_console() -> ConsoleWindow {
     ConsoleWindow::new()
 }
