@@ -24,5 +24,5 @@ required-features = [ "amethyst-system" ]
 imgui = "0.2"
 log = "0.4.8"
 cvar = "0.2.0"
-amethyst = { version = "0.13.2", optional = true }
-amethyst-imgui = { version = "0.5.2", optional = true }
+amethyst = { version = "0.15.3", optional = true }
+amethyst-imgui = { version = "0.7.1", optional = true }

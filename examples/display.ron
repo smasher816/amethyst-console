@@ -1,0 +1,4 @@
+(
+    title: "Console Demo",
+    dimensions: Some((800, 600))
+)
